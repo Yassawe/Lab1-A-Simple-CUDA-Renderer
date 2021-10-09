@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <getopt.h>
 #include <string>
+#include "CycleTimer.h"
 
 void saxpyCuda(int N, float alpha, float* x, float* y, float* result);
 void printCudaInfo();
@@ -14,6 +15,17 @@ void usage(const char* progname) {
     printf("  -?  --help             This message\n");
 }
 
+
+void saxpyCPU(int N, float alpha, float* xarray, float* yarray, float* resultarray){
+    double startTime = CycleTimer::currentSeconds();
+    for (int i = 0; i<N; i++){
+        resultarray[i] = alpha * xarray[i] + yarray[i];
+    }
+    double endTime = CycleTimer::currentSeconds();
+
+    double CPUtime = endTime - startTime;
+    printf("CPU elapsed time: %.3f ms.\n", 1000.f * CPUtime);
+}
 
 int main(int argc, char** argv)
 {
@@ -55,9 +67,15 @@ int main(int argc, char** argv)
 
     printCudaInfo();
     
-    printf("Running 3 timing tests:\n");
+
+    printf("Running 3 GPU timing tests:\n");
     for (int i=0; i<3; i++) {
       saxpyCuda(N, alpha, xarray, yarray, resultarray);
+    }
+
+    printf("\nRunning 3 CPU timing tests:\n");
+    for (int i = 0; i<3; i++){
+        saxpyCPU(N, alpha, xarray, yarray, resultarray);
     }
 
     delete [] xarray;
