@@ -55,6 +55,7 @@ __constant__ float  cuConstColorRamp[COLOR_MAP_SIZE][3];
 // file simpler and to seperate code that should not be modified
 #include "noiseCuda.cu_inl"
 #include "lookupColor.cu_inl"
+#include "circleBoxRest.cu_inl"
 
 
 // kernelClearImageSnowflake -- (CUDA device code)
@@ -426,6 +427,24 @@ __global__ void kernelRenderCircles() {
         }
     }
 }
+/////////////////////////////[MY CHANGES (KERNELS) START HERE]///////////////////////////////////////
+#define BLOCK_SIZE 128
+
+__global__ void blockRenderCircles() {
+    int bx = blockIdx.x;
+    int by = blockIdx.y;
+
+    float normX = 1.f/cuConstRendererParams.ImageWidth;
+    float normY = 1.f/cuConstRendererParams.ImageHeight;
+
+    float left = bw*normX;
+    float right = (bw+BLOCK_SIZE)*normX;
+    float top = by*normY;
+    float bottom = (by+BLOCK_SIZE)*normY;
+
+
+
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////
 
@@ -636,9 +655,9 @@ CudaRenderer::advanceAnimation() {
 void
 CudaRenderer::render() {
 
-    // 256 threads per block is a healthy number
-    dim3 blockDim(256, 1);
-    dim3 gridDim((numCircles + blockDim.x - 1) / blockDim.x);
+    // 128x128 block is a healthy block
+    dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
+    dim3 gridDim((cuConstRendererParams.ImageWidth - 1)/BLOCK_SIZE+1, (cuConstRendererParams.ImageHeight - 1)/BLOCK_SIZE+1);
 
     kernelRenderCircles<<<gridDim, blockDim>>>();
     cudaDeviceSynchronize();
