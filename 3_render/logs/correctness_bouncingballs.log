@@ -1,0 +1,25 @@
+Rendering to 1024x1024 image
+Loaded scene with 10 circles
+Loaded scene with 10 circles
+---------------------------------------------------------
+Initializing CUDA for CudaRenderer
+Found 1 CUDA devices
+Device 0: NVIDIA GeForce GTX 1050
+   SMs:        5
+   Global mem: 2000 MB
+   CUDA Cap:   6.1
+---------------------------------------------------------
+
+Running benchmark, 1 frames, beginning at frame 0 ...
+Dumping frames to output_xxx.ppm
+Copying image data from device
+Wrote image file output_0000.ppm
+Copying image data from device
+***************** Correctness check passed **************************
+Clear:    0.2644 ms
+Advance:  0.0068 ms
+Render:   4.5458 ms
+Total:    4.8171 ms
+File IO:  48.3851 ms
+
+Overall:  0.0629 sec (note units are seconds)
