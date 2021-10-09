@@ -109,7 +109,7 @@ void saxpyCuda(int N, float alpha, float* xarray, float* yarray, float* resultar
 
     //
     // TODO: copy result from GPU back to CPU using cudaMemcpy
-    cudaMemcpy(resultarray, device_resilt, size, cudaMemcpyDeviceToHost);
+    cudaMemcpy(resultarray, device_result, size, cudaMemcpyDeviceToHost);
     //
 
     
