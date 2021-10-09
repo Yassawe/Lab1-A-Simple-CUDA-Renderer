@@ -53,12 +53,52 @@ void computeRefMatrixMul(float *C, const float *A, const float *B, unsigned int 
 __global__ 
 void matrixMul_naive(float* C, float* A, float* B, int wA, int wB) {
 	// TODO: fill me
+  float sum = 0;
+
+  int row = blockIdx.y*blockDim.y + threadIdx.y;
+  int column = blockIdx.x*blockDim.x + threadIdx.x;
+
+  for (int k = 0; k<wA; k++){
+    sum += A[row*wA + k] * B[k*wB + column];
+  }
+
+  C[wB*row + column] = sum; 
 }
 
 __global__ 
 void matrixMul_shmem( float* C, float* A, float* B, int wA, int wB)
 {
-	// TODO: fill me
+  // TODO: fill me
+  __shared__ float sA[BLOCK_SIZE][BLOCK_SIZE];
+  __shared__ float sB[BLOCK_SIZE][BLOCK_SIZE];
+
+  int ty = threadIdx.y;
+  int tx = threadIdx.x;
+  
+  int row = blockIdx.y*BLOCK_SIZE + ty; //row along y
+  int column = blockIdx.x*BLOCK_SIZE + tx;// column along x
+
+  float sum = 0;
+
+  for (int i=0; i<wA/BLOCK_SIZE; i++){
+
+    int indexforA = row*wA + i*BLOCK_SIZE + tx;
+    int indexforB = i*BLOCK_SIZE*wB + ty*wB + column;
+
+    sA[ty][tx] = A[indexforA];
+    sB[ty][tx] = B[indexforB];
+
+    __syncthreads();
+
+    for (int ii=0; ii<BLOCK_SIZE; ii++){
+      sum+=sA[ty][ii]*sB[ii][tx];
+    }
+
+    __syncthreads();
+  }
+
+  C[row*wB+column] = sum;
+
 }
 
 void randomInitialization(float *data, int size) {
