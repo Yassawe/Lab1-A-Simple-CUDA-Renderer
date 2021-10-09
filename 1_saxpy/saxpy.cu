@@ -72,9 +72,9 @@ void saxpyCuda(int N, float alpha, float* xarray, float* yarray, float* resultar
 
     int size = N*sizeof(float);
 
-    cudaMalloc(&device_x, size);
-    cudaMalloc(&device_y, size);
-    cudaMalloc(&device_result, size);
+    cudaMalloc((void **)&device_x, size);
+    cudaMalloc((void **)&device_y, size);
+    cudaMalloc((void **)&device_result, size);
     //
         
     // start timing after allocation of device memory
