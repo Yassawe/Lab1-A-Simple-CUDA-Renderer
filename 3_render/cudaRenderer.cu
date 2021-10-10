@@ -55,7 +55,6 @@ __constant__ float  cuConstColorRamp[COLOR_MAP_SIZE][3];
 // file simpler and to seperate code that should not be modified
 #include "noiseCuda.cu_inl"
 #include "lookupColor.cu_inl"
-#include "circleBoxRest.cu_inl"
 
 
 // kernelClearImageSnowflake -- (CUDA device code)
@@ -428,21 +427,55 @@ __global__ void kernelRenderCircles() {
     }
 }
 /////////////////////////////[MY CHANGES (KERNELS) START HERE]///////////////////////////////////////
+
+// struct GlobalConstants {
+
+// SceneName sceneName;
+
+// int numCircles;
+// float* position;
+// float* velocity;
+// float* color;
+// float* radius;
+
+// int imageWidth;
+// int imageHeight;
+// float* imageData;
+// };
+
+#include "circleBoxTest.cu_inl"
 #define BLOCK_SIZE 128
 
-__global__ void blockRenderCircles() {
+
+// naive version of pixel parallelism via image blocking (shared memory is not used)
+// this approach is bad, since the majority of the threads will do nothing
+__global__ void naiveBlockRenderCircles() {
     int bx = blockIdx.x;
     int by = blockIdx.y;
+    
+    int pixelX = ;
+    int pixelY = ;
+    
+    short imW = cuConstRendererParams.ImageWidth;
+    short imH = cuConstRendererParams.ImageHeight;
 
-    float normX = 1.f/cuConstRendererParams.ImageWidth;
-    float normY = 1.f/cuConstRendererParams.ImageHeight;
+    float normX = 1.f/imW;
+    float normY = 1.f/imH;
 
     float left = bw*normX;
-    float right = (bw+BLOCK_SIZE)*normX;
+    float right = (bw+BLOCK_SIZE-1)*normX; //begins from 0, so idx of the last is len - 1
     float top = by*normY;
-    float bottom = (by+BLOCK_SIZE)*normY;
+    float bottom = (by+BLOCK_SIZE-1)*normY;
 
+    for (int i = 0; i<cuConstRendererParams.numCircles; i++){
+        float rad = cuConstRendererParams.radius[i];
+        float circleX = cuConstRendererParams.position[3*i];
+        float circleY = cuConstRendererParams.position[3*i+1];
 
+        if circleInBoxConservative(circleX, circleY, rad, left, right, top, bottom){
+
+        }
+    }
 
 }
 
