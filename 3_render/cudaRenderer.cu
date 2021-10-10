@@ -428,24 +428,28 @@ __global__ void kernelRenderCircles() {
 }
 /////////////////////////////[MY CHANGES (KERNELS) START HERE]///////////////////////////////////////
 
-// struct GlobalConstants {
 
-// SceneName sceneName;
-
-// int numCircles;
-// float* position;
-// float* velocity;
-// float* color;
-// float* radius;
-
-// int imageWidth;
-// int imageHeight;
-// float* imageData;
-// };
-
-#include "circleBoxTest.cu_inl"
 #define BLOCK_SIZE 128
 
+
+__device__ __inline__ int
+circleInBoxConservative(
+    float3 circlePosition, float circleRadius,
+    float boxL, float boxR, float boxT, float boxB)
+{
+
+    // expand box by circle radius.  Test if circle center is in the
+    // expanded box.
+
+    if ( position.x >= (boxL - circleRadius) &&
+         position.x <= (boxR + circleRadius) &&
+         position.y >= (boxB - circleRadius) &&
+         position.y <= (boxT + circleRadius) ) {
+        return 1;
+    } else {
+        return 0;
+    }
+}
 
 // naive version of pixel parallelism via image blocking (shared memory is not used)
 // this approach is bad, since the majority of the threads will do nothing
@@ -453,11 +457,15 @@ __global__ void naiveBlockRenderCircles() {
     int bx = blockIdx.x;
     int by = blockIdx.y;
     
-    int pixelX = ;
-    int pixelY = ;
-    
+    int pixelX = bx*BLOCK_SIZE + threadIdx.x;
+    int pixelY = by*BLOCK_SIZE + threadIdx.y;
+
     short imW = cuConstRendererParams.ImageWidth;
     short imH = cuConstRendererParams.ImageHeight;
+
+    if (pixelX>imW || pixelY>imH){
+        return //kill threads that are outside bounds
+    }
 
     float normX = 1.f/imW;
     float normY = 1.f/imH;
@@ -467,13 +475,16 @@ __global__ void naiveBlockRenderCircles() {
     float top = by*normY;
     float bottom = (by+BLOCK_SIZE-1)*normY;
 
+    float2 pixelCenterNorm = make_float2(normX * (static_cast<float>(pixelX) + 0.5f), normY * (static_cast<float>(pixelY) + 0.5f)); //why +0.5f?
+    float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imW + pixelX)]); // + pixelX? i should access every pixel, so that makes sense
+
     for (int i = 0; i<cuConstRendererParams.numCircles; i++){
         float rad = cuConstRendererParams.radius[i];
-        float circleX = cuConstRendererParams.position[3*i];
-        float circleY = cuConstRendererParams.position[3*i+1];
 
-        if circleInBoxConservative(circleX, circleY, rad, left, right, top, bottom){
+        float3 circlePosition = *(float3*)(&cuConstRendererParams.position[3*i]);
 
+        if circleInBoxConservative(circlePosition,rad, left, right, top, bottom){
+            shadePixel(i, pixelCenterNorm, circlePosition, imgPtr);
         }
     }
 
@@ -692,6 +703,8 @@ CudaRenderer::render() {
     dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
     dim3 gridDim((cuConstRendererParams.ImageWidth - 1)/BLOCK_SIZE+1, (cuConstRendererParams.ImageHeight - 1)/BLOCK_SIZE+1);
 
-    kernelRenderCircles<<<gridDim, blockDim>>>();
+    //kernelRenderCircles<<<gridDim, blockDim>>>();
+
+    naiveBlockRenderCircles<<<gridDim, blockDim>>>();
     cudaDeviceSynchronize();
 }
