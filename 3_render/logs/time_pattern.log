@@ -10,9 +10,9 @@ Device 0: NVIDIA GeForce GTX 1050
 ---------------------------------------------------------
 
 Running benchmark, 4 frames, beginning at frame 0 ...
-Clear:    1.1987 ms
-Advance:  0.0006 ms
+Clear:    1.1220 ms
+Advance:  0.0005 ms
 Render:   0.0016 ms
-Total:    1.2009 ms
+Total:    1.1242 ms
 
-Overall:  0.0048 sec (note units are seconds)
+Overall:  0.0045 sec (note units are seconds)

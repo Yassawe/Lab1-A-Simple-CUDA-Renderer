@@ -488,35 +488,44 @@ __global__ void naivePixelParallelism() {
     short imH = cuConstRendererParams.imageHeight;
 
     if (pixelX>imW || pixelY>imH){
-        return; //kill threads that are outside bounds
+        return; 
     }
 
     float normX = 1.f/imW;
     float normY = 1.f/imH;
 
-    // float left = (bx*BLOCK_SIZE)*normX;
-    // float right = (bx*BLOCK_SIZE+BLOCK_SIZE-1)*normX; //begins from 0, so idx of the last is len - 1
-    // float top = (by*BLOCK_SIZE)*normY;
-    // float bottom = (by*BLOCK_SIZE+BLOCK_SIZE-1)*normY;
+    float2 pixelCenterNorm = make_float2(normX * (static_cast<float>(pixelX) + 0.5f), normY * (static_cast<float>(pixelY) + 0.5f));
 
-    float2 pixelCenterNorm = make_float2(normX * (static_cast<float>(pixelX) + 0.5f), normY * (static_cast<float>(pixelY) + 0.5f)); //why +0.5f?
-
-    float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imW + pixelX)]); // + pixelX? i should access every pixel, so that makes sense
+    float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imW + pixelX)]); 
 
     for (int i = 0; i<cuConstRendererParams.numCircles; i++){
         float rad = cuConstRendererParams.radius[i];
 
         float3 circlePosition = *(float3*)(&cuConstRendererParams.position[3*i]);
-
-        // if(circleInBoxConservative(circlePosition, rad, left, right, top, bottom)){        
         shadePixel(i, pixelCenterNorm, circlePosition, imgPtr);
-        //}
     }
 
 }
 
 //little less naive pixel parallelism (fetch "valid" circles concurrently)
 __global__ void lessNaivePixelParallelism() {
+    int bx = blockIdx.x;
+    int by = blockIdx.y;
+
+    int pixelX = bx*BLOCK_SIZE + threadIdx.x;
+    int pixelY = by*BLOCK_SIZE + threadIdx.y;
+
+    short imW = cuConstRendererParams.imageWidth;
+    short imH = cuConstRendererParams.imageHeight;
+
+    float normX = 1.f/imW;
+    float normY = 1.f/imH;
+
+    // boundaries for the thread in the current block, converted to normalized coordinates. left, right, top, bottom
+    float L = bx*BLOCK_SIZE*normX;
+    float R = (bx*BLOCK_SIZE + BLOCK_SIZE)*normX;
+    float T = by*BLOCK_SIZE*normY;
+    float B = (by*BLOCK_SIZE+BLOCK_SIZE)*normY;
 
 }
 
@@ -731,16 +740,15 @@ CudaRenderer::advanceAnimation() {
 void
 CudaRenderer::render() {
 
-    // 128x128 block is a healthy block
-    dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
-    dim3 gridDim((image->width - 1)/BLOCK_SIZE+1, (image->height - 1)/BLOCK_SIZE+1);
+    // dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
+    // dim3 gridDim((image->width - 1)/BLOCK_SIZE+1, (image->height - 1)/BLOCK_SIZE+1);
 
-    // dim3 blockDim(256, 1);
-    // dim3 gridDim((numCircles + blockDim.x - 1) / blockDim.x);
+    dim3 blockDim(256, 1);
+    dim3 gridDim((numCircles + blockDim.x - 1) / blockDim.x);
 
-    //kernelRenderCircles<<<gridDim, blockDim>>>();
+    kernelRenderCircles<<<gridDim, blockDim>>>();
 
-    naivePixelParallelism<<<gridDim, blockDim>>>();
+    //naivePixelParallelism<<<gridDim, blockDim>>>();
 
     cudaCheckError(cudaPeekAtLastError());
     cudaCheckError(cudaDeviceSynchronize());
