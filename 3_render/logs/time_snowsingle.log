@@ -1,0 +1,19 @@
+Rendering to 1024x1024 image
+Loaded data for 100000 circles from snow.par
+Loaded scene with 100000 circles
+---------------------------------------------------------
+Initializing CUDA for CudaRenderer
+Found 1 CUDA devices
+Device 0: NVIDIA GeForce GTX 1050
+   SMs:        5
+   Global mem: 2000 MB
+   CUDA Cap:   6.1
+---------------------------------------------------------
+
+Running benchmark, 4 frames, beginning at frame 0 ...
+Clear:    64.4493 ms
+Advance:  0.0015 ms
+Render:   0.0041 ms
+Total:    64.4549 ms
+
+Overall:  0.2578 sec (note units are seconds)

@@ -14,6 +14,29 @@
 #include "sceneLoader.h"
 #include "util.h"
 
+
+// #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+// inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
+// {
+//    if (code != cudaSuccess) 
+//    {
+//       fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+//       if (abort) exit(code);
+//    }
+// }
+
+
+#define cudaCheckError(ans) { cudaAssert((ans), __FILE__ , __LINE__ ); }
+inline void cudaAssert(cudaError_t code, const char *file, int line, bool abort=true)
+{
+    if (code != cudaSuccess)
+    {
+        fprintf(stderr, "CUDA Error: %s at %s:%d\n", cudaGetErrorString(code), file, line);
+        if (abort) exit(code);
+    }
+}
+
+
 ////////////////////////////////////////////////////////////////////////////////////////
 // Putting all the cuda kernels here
 ///////////////////////////////////////////////////////////////////////////////////////
@@ -429,7 +452,7 @@ __global__ void kernelRenderCircles() {
 /////////////////////////////[MY CHANGES (KERNELS) START HERE]///////////////////////////////////////
 
 
-#define BLOCK_SIZE 128
+#define BLOCK_SIZE 32
 
 
 __device__ __inline__ int
@@ -441,10 +464,10 @@ circleInBoxConservative(
     // expand box by circle radius.  Test if circle center is in the
     // expanded box.
 
-    if ( position.x >= (boxL - circleRadius) &&
-         position.x <= (boxR + circleRadius) &&
-         position.y >= (boxB - circleRadius) &&
-         position.y <= (boxT + circleRadius) ) {
+    if ( circlePosition.x >= (boxL - circleRadius) &&
+         circlePosition.x <= (boxR + circleRadius) &&
+         circlePosition.y >= (boxB - circleRadius) &&
+         circlePosition.y <= (boxT + circleRadius) ) {
         return 1;
     } else {
         return 0;
@@ -456,36 +479,36 @@ circleInBoxConservative(
 __global__ void naiveBlockRenderCircles() {
     int bx = blockIdx.x;
     int by = blockIdx.y;
+
     
     int pixelX = bx*BLOCK_SIZE + threadIdx.x;
     int pixelY = by*BLOCK_SIZE + threadIdx.y;
 
-    short imW = cuConstRendererParams.ImageWidth;
-    short imH = cuConstRendererParams.ImageHeight;
+    short imW = cuConstRendererParams.imageWidth;
+    short imH = cuConstRendererParams.imageHeight;
 
     if (pixelX>imW || pixelY>imH){
-        return //kill threads that are outside bounds
+        return; //kill threads that are outside bounds
     }
 
     float normX = 1.f/imW;
     float normY = 1.f/imH;
 
-    float left = bw*normX;
-    float right = (bw+BLOCK_SIZE-1)*normX; //begins from 0, so idx of the last is len - 1
+    float left = bx*normX;
+    float right = (bx+BLOCK_SIZE-1)*normX; //begins from 0, so idx of the last is len - 1
     float top = by*normY;
     float bottom = (by+BLOCK_SIZE-1)*normY;
 
     float2 pixelCenterNorm = make_float2(normX * (static_cast<float>(pixelX) + 0.5f), normY * (static_cast<float>(pixelY) + 0.5f)); //why +0.5f?
+
     float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imW + pixelX)]); // + pixelX? i should access every pixel, so that makes sense
 
     for (int i = 0; i<cuConstRendererParams.numCircles; i++){
         float rad = cuConstRendererParams.radius[i];
-
+        
         float3 circlePosition = *(float3*)(&cuConstRendererParams.position[3*i]);
-
-        if circleInBoxConservative(circlePosition,rad, left, right, top, bottom){
-            shadePixel(i, pixelCenterNorm, circlePosition, imgPtr);
-        }
+        
+        shadePixel(i, pixelCenterNorm, circlePosition, imgPtr);
     }
 
 }
@@ -696,15 +719,18 @@ CudaRenderer::advanceAnimation() {
     cudaDeviceSynchronize();
 }
 
+
 void
 CudaRenderer::render() {
 
     // 128x128 block is a healthy block
     dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
-    dim3 gridDim((cuConstRendererParams.ImageWidth - 1)/BLOCK_SIZE+1, (cuConstRendererParams.ImageHeight - 1)/BLOCK_SIZE+1);
+    dim3 gridDim((image->width - 1)/BLOCK_SIZE+1, (image->height - 1)/BLOCK_SIZE+1);
 
     //kernelRenderCircles<<<gridDim, blockDim>>>();
 
     naiveBlockRenderCircles<<<gridDim, blockDim>>>();
-    cudaDeviceSynchronize();
+
+    cudaCheckError(cudaPeekAtLastError());
+    cudaCheckError(cudaDeviceSynchronize());
 }
