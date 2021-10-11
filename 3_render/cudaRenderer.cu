@@ -619,7 +619,7 @@ __device__ __inline__ void checkCircles2(int index, int threadId, int virtualThr
 
     if (circleInBox(position1.x, position1.y, rad1, L, R, T, B)){
         tempIdx[virtualThreadId] = virtualThreadId;
-        mask[virtualThreadId] += 1;
+        mask[threadId] += 1;
         atomicAdd(len, 1);
 
         which[threadId]=1; //if only first present, 'which' is 1
@@ -627,7 +627,7 @@ __device__ __inline__ void checkCircles2(int index, int threadId, int virtualThr
 
     if (circleInBox(position2.x, position2.y, rad2, L, R, T, B)){
         tempIdx[virtualThreadId+1] = virtualThreadId+1;
-        mask[virtualThreadId] += 1;
+        mask[threadId] += 1;
         atomicAdd(len, 1);
 
         if (which[threadId]==1){
@@ -729,11 +729,7 @@ __global__ void doubleEverythingPixelParallel() {
         checkCircles2(i, threadId, virtualThreadId, totalCircles, L, R, T, B, tempIdx, mask, which, &len);
         __syncthreads();
 
-        sharedMemExclusiveScan(threadId, mask, offset, scratch, batchsize);
-        __syncthreads();
-
-        // debugscan(threadId, mask, offset);
-        // __syncthreads();
+        sharedMemExclusiveScan(threadId, mask, offset, scratch, binsize);
 
         constructValidIdx2(threadId, virtualThreadId, tempIdx, mask, offset, validIdx, which);
         __syncthreads();
