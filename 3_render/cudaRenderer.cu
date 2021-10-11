@@ -493,7 +493,7 @@ __device__ __inline__ void checkCircles(int index, int threadId, int totalCircle
     float rad = cuConstRendererParams.radius[globalCircleIndex];
     float3 circlePosition = *(float3*)(&cuConstRendererParams.position[3*globalCircleIndex]);
 
-    if (circleInBox(circlePosition.x, circlePosition.y, rad, L, R, T, B)){
+    if (circleInBoxConservative(circlePosition.x, circlePosition.y, rad, L, R, T, B)){
         tempIdx[threadId] = threadId;
         mask[threadId] = 1;
         atomicAdd(len, 1);
@@ -541,7 +541,9 @@ __global__ void lessNaivePixelParallelism() {
 
     int threadId = threadIdx.y * BLOCK_SIZE + threadIdx.x;
 
-    const uint batchsize = BLOCK_SIZE*BLOCK_SIZE; //can iterate over 32*32 = 1024 circles at a time
+    //can iterate over 32*32 = 1024 circles at a time. 
+    //it doesn't make sense to go bigger, since with any larger batchsize we will inevitably process concurrently (inside threads)
+    const uint batchsize = BLOCK_SIZE*BLOCK_SIZE; 
 
     __shared__ uint tempIdx[batchsize];
     __shared__ uint mask[batchsize];
@@ -566,7 +568,7 @@ __global__ void lessNaivePixelParallelism() {
         __syncthreads();
 
         sharedMemExclusiveScan(threadId, mask, offset, scratch, batchsize);
-        __syncthreads();
+        //__syncthreads();
 
         constructValidIdx(threadId, tempIdx, mask, offset, validIdx);
         __syncthreads();
