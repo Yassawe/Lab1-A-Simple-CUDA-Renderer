@@ -343,6 +343,10 @@ __global__ void kernelAdvanceSnowflake() {
 __device__ __inline__ void
 shadePixel(int circleIndex, float2 pixelCenter, float3 p, float4* imagePtr) {
 
+    if (imagePtr==NULL){
+        return;
+    }
+
     float diffX = p.x - pixelCenter.x;
     float diffY = p.y - pixelCenter.y;
     float pixelDist = diffX * diffX + diffY * diffY;
@@ -494,7 +498,8 @@ __global__ void naivePixelParallelism() {
 
 //helper functions:
 
-__device__ __inline__ void checkCircles(int index, int threadId, int totalCircles, float L, float R, float T, float B, int *temp, int *len){
+
+__device__ __inline__ void checkCircles(int index, int threadId, int totalCircles, float L, float R, float T, float B, int* tempIdx, int* mask, int* len){
     int globalCircleIndex = index + threadId;
     
     if (globalCircleIndex>totalCircles){
@@ -505,9 +510,23 @@ __device__ __inline__ void checkCircles(int index, int threadId, int totalCircle
     float3 circlePosition = *(float3*)(&cuConstRendererParams.position[3*globalCircleIndex]);
 
     if (circleInBoxConservative(circlePosition.x, circlePosition.y, rad, L, R, T, B)){
-        temp[threadId] = threadId+1; // index+1, since I later intend to pass all non-zero elements to validIdx. If I don't do +1, I miss the circle 0
+        tempIdx[threadId] = threadId;
+        mask[threadId] = 1;
         atomicAdd(len, 1);
     }
+}
+
+__device__ __inline__ void constructValidIdx(int threadId, int* tempIdx, int* mask, int* offset, int* validIdx){
+    
+    if(mask[threadId]==1){
+        int arrayidx = offset[threadId];
+        int validCircleIdx = tempIdx[threadId];
+        validIdx[arrayidx] = validCircleIdx
+    }
+}
+
+__device__ __inline__ void parallelPrefixSumExclusive(int threadId, int* mask, int* offset){
+    // MOST IMPORTANT
 }
 
 // main kernel:
@@ -545,10 +564,12 @@ __global__ void lessNaivePixelParallelism() {
     // the idea of optimization is to iterate over several circles at once, i.e. something akin to batches, and then select only those circles that are inside the block
     // to do so, i need shared array valididx containing only indecies of circles that are present in the block.  
 
-    int threadIdInBlock = threadIdx.y * BLOCK_SIZE + threadIdx.x;
+    int threadId = threadIdx.y * BLOCK_SIZE + threadIdx.x;
     const int batchsize = BLOCK_SIZE*BLOCK_SIZE; //can iterate over 32*32 = 1024 circles at a time
 
-    __shared__ int temp[batchsize];
+    __shared__ int tempIdx[batchsize];
+    __shared__ int mask[batchsize];
+    __shared__ int offset[batchsize];
     __shared__ int validIdx[batchsize];
     __shared__ int len;
 
@@ -556,17 +577,28 @@ __global__ void lessNaivePixelParallelism() {
 
     for (int i = 0; i<totalCircles; i+=batchsize){
         len = 0;
-        temp[threadIdInBlock] = 0;
-        validIdx[threadIdInBlock] = 0;
-        
-        __syncthreads();
-
-        checkCircles(i, threadIdInBlock, totalCircles, L, R, T, B, &temp, &len);
-
+        tempIdx[threadId] = 0;
+        mask[threadId] = 0;
+        offset[threadId] = 0;
+        validIdx[threadId] = 0;
         __syncthreads();
 
 
-        //shadePixel(i, pixelCenterNorm, circlePosition, imgPtr);
+        checkCircles(i, threadId, totalCircles, L, R, T, B, tempIdx, mask, &len);
+        __syncthreads();
+
+        parallelPrefixSumExclusive(threadId, mask, offset);
+        __syncthreads();
+    
+        constructValidIdx(threadId, tempIdx, mask, offset, validIdx);
+        __syncthreads();
+
+        for (int j = 0; j<len; j++){
+            int index = i + validIdx[j];
+
+            float3 circlePosition = *(float3*)(&cuConstRendererParams.position[3*index]);
+            shadePixel(i, pixelCenterNorm, circlePosition, imgPtr);
+        }
         
     }
 }
