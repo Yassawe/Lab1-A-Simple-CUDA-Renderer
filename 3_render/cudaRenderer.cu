@@ -457,11 +457,6 @@ __global__ void kernelRenderCircles() {
 
 
 #define BLOCK_SIZE 32
-#include "circleBoxTest.cu_inl"
-
-#define SCAN_BLOCK_DIM 1024
-#include "exclusiveScan.cu_inl"
-
 
 // naive version of pixel parallelism via image blocking (shared memory is not used)
 // this approach is bad, since the majority of the threads will do nothing
@@ -494,11 +489,16 @@ __global__ void naivePixelParallelism() {
 
 }
 
-/////////////////////////less naive pixel parallelism (fetch "valid" circles concurrently)///////////////////////////
+/////////////////////////////less naive pixel parallelism (fetch "valid" circles concurrently)///////////////////////////
+
+#include "circleBoxTest.cu_inl"
+
+#define SCAN_BLOCK_DIM 1024
+#include "exclusiveScan.cu_inl"
 
 //helper functions:
 
-__device__ __inline__ void checkCircles(int index, int threadId, int totalCircles, float L, float R, float T, float B, uint* tempIdx, uint* mask){
+__device__ __inline__ void checkCircles(int index, int threadId, int totalCircles, float L, float R, float T, float B, uint* tempIdx, uint* mask, int* len){
     int globalCircleIndex = index + threadId;
     
     if (globalCircleIndex>totalCircles){
@@ -508,9 +508,10 @@ __device__ __inline__ void checkCircles(int index, int threadId, int totalCircle
     float rad = cuConstRendererParams.radius[globalCircleIndex];
     float3 circlePosition = *(float3*)(&cuConstRendererParams.position[3*globalCircleIndex]);
 
-    if (circleInBoxConservative(circlePosition.x, circlePosition.y, rad, L, R, T, B)){
+    if (circleInBox(circlePosition.x, circlePosition.y, rad, L, R, T, B)){
         tempIdx[threadId] = threadId;
         mask[threadId] = 1;
+        atomicAdd(len, 1);
     }
 }
 
@@ -521,31 +522,6 @@ __device__ __inline__ void constructValidIdx(int threadId, uint* tempIdx, uint* 
         uint validCircleIdx = tempIdx[threadId];
         validIdx[arrayidx] = validCircleIdx;
     }
-}
-
-__device__ __inline__ void NaiveScan(int threadId, uint* mask, uint* offset, uint* scratch, int batchsize){   
-       
-    int pout = 0, pin = 1;   
-
-    // This is exclusive scan, so shift right by one    
-    // and set first element to 0   
-    scratch[pout*batchsize + threadId] = (threadId > 0) ? mask[threadId-1] : 0;
-
-    __syncthreads();   
-    
-    for (int i = 1; i < batchsize; i *= 2){     
-        pout = 1 - pout;      
-        pin = 1 - pout;     
-        if (threadId >= i){
-            scratch[pout*batchsize+threadId] += scratch[pin*batchsize+threadId - i];
-        }     
-        else{       
-            scratch[pout*batchsize+threadId] = scratch[pin*batchsize+threadId];
-        }     
-        __syncthreads();   
-    }   
-    
-    offset[threadId] = scratch[pout*batchsize+threadId]; // write output
 }
 
 
@@ -563,9 +539,6 @@ __global__ void lessNaivePixelParallelism() {
     float4* imgPtr = nullptr;
     
     if (pixelX<imW && pixelY<imH){
-        // i cant just kill threads outside the image, since __synchronize would wait for them later. 
-        //Assigning valid pointers only to valid threads.
-
         imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imW + pixelX)]); 
     }
 
@@ -594,12 +567,12 @@ __global__ void lessNaivePixelParallelism() {
     __shared__ uint validIdx[batchsize];
     __shared__ uint scratch[batchsize*2];
 
-    //__shared__ int len;
+    __shared__ int len;
 
     int totalCircles = cuConstRendererParams.numCircles; 
 
     for (int i = 0; i<totalCircles; i+=batchsize){
-        //len = 0;
+        len = 0;
         tempIdx[threadId] = 0;
         mask[threadId] = 0;
         offset[threadId] = 0;
@@ -607,26 +580,18 @@ __global__ void lessNaivePixelParallelism() {
         __syncthreads();
 
 
-        checkCircles(i, threadId, totalCircles, L, R, T, B, tempIdx, mask);
+        checkCircles(i, threadId, totalCircles, L, R, T, B, tempIdx, mask, &len);
         __syncthreads();
 
         sharedMemExclusiveScan(threadId, mask, offset, scratch, batchsize);
         __syncthreads();
 
-        // NaiveScan(threadId, mask, offset, scratch, batchsize);
-        // __syncthreads();
     
         constructValidIdx(threadId, tempIdx, mask, offset, validIdx);
         __syncthreads();
-
-        int length = offset[batchsize-1]+1;
-
-        if (length==4){
-            printf("salam\n");
-        }
-
-        for (int j = 0; j<length; j++){
-            int index = i*batchsize + validIdx[j];
+        
+        for (int j = 0; j<len; j++){
+            int index = i + validIdx[j];
             
             if (index>totalCircles){
                 continue;
@@ -635,6 +600,7 @@ __global__ void lessNaivePixelParallelism() {
             float3 circlePosition = *(float3*)(&cuConstRendererParams.position[3*index]);
             shadePixel(index, pixelCenterNorm, circlePosition, imgPtr);
         }
+        __syncthreads();
         
     }
 }
