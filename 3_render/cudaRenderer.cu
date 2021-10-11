@@ -621,48 +621,30 @@ __device__ __inline__ void checkCircles2(int index, int threadId, int virtualThr
         tempIdx[virtualThreadId] = virtualThreadId;
         mask[threadId] += 1;
         atomicAdd(len, 1);
-
-        which[threadId]=1; //if only first present, 'which' is 1
     }
 
     if (circleInBox(position2.x, position2.y, rad2, L, R, T, B)){
         tempIdx[virtualThreadId+1] = virtualThreadId+1;
         mask[threadId] += 1;
         atomicAdd(len, 1);
-
-        if (which[threadId]==1){
-            which[threadId] = 3; //if both present, 'which' is 3
-        }
-        else{
-            which[threadId] = 2; //if only second is present, 'which' is 2
-        }
+        which[threadId]=1;
         
     }
 }
 
 __device__ __inline__ void constructValidIdx2(int threadId, int virtualThreadId, uint* tempIdx, uint* mask, uint* offset, uint* validIdx, uint* which){
     
-    if (mask[threadId]!=0){
-        uint flag = which[threadId];
+    uint offsetindex = offset[threadId];
+    uint circleindex1 = virtualThreadId;
+    uint circleindex2 = virtualThreadId+1;
 
-        uint offsetindex = offset[threadId];
-
-        int circleindex1 = tempIdx[virtualThreadId];
-        int circleindex2 = tempIdx[virtualThreadId+1];
-
-        if (flag==1){ 
-            validIdx[offsetindex] = circleindex1; //only first is present
-        }
-        else if (flag==2){
-            validIdx[offsetindex] = circleindex2; //only second is present
-        }
-        else if (flag==3){
-            validIdx[offsetindex] = circleindex1; //both are present
-            validIdx[offsetindex+1] = circleindex2;
-        }
-        
+    if (mask[threadId]==2){
+        validIdx[offsetindex] = circleindex1;
+        validIdx[offsetindex+1] = circleindex2;
     }
-    
+    else if(mask[threadId]==1){
+        validIdx[offsetindex] = circleindex1 + which[threadId];
+    }
 }
 
 __global__ void doubleEverythingPixelParallel() {
@@ -966,15 +948,13 @@ CudaRenderer::render() {
     dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
     dim3 gridDim((image->width - 1)/BLOCK_SIZE+1, (image->height - 1)/BLOCK_SIZE+1);
 
-    // if(numCircles<10){
-    //     naivePixelParallelism<<<gridDim, blockDim>>>();
-    // }
-    // else{
-    //     lessNaivePixelParallelism<<<gridDim, blockDim>>>();
-    // }
+    if(numCircles<10){
+        naivePixelParallelism<<<gridDim, blockDim>>>();
+    }
+    else{
+        doubleEverythingPixelParallel<<<gridDim, blockDim>>>();
+    }
 
-    doubleEverythingPixelParallel<<<gridDim, blockDim>>>();
-    
     cudaCheckError(cudaPeekAtLastError());
     cudaCheckError(cudaDeviceSynchronize());
     
