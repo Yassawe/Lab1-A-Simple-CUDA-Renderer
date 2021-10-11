@@ -589,20 +589,26 @@ __global__ void lessNaivePixelParallelism() {
     }
 }
 
-/////////////////////////////////////[wacky optimization, basically double everything]///////////////////////////////////////////////////
+/////////////////////////////////////[really wacky optimization, basically double everything]///////////////////////////////////////////////////
 
+//optimal scan implementations trade shared memory for time
+//i trade time for shared memory, to process 2048 circles per iteration
+//because i cannot use buffer[2*batchsize] that is required for optimal scan implementatons. 
 
-// __device__ __inline__ void debugscan(int threadId, uint* in, uint* out){
-//     int sum = 0;
+__device__ __inline__ void stupidscan(int virtualThreadId, uint* in, uint* out){ 
+    uint sum = 0;
 
-//     for (int i =0; i<threadId; i++){
-//         sum += in[i];
-//     }
+    for(int i=0; i<virtualThreadId; i++){
+        sum+=in[i];
+    }
 
-//     out[threadId] = sum;
-// }
+    out[virtualThreadId] = sum;
+    out[virtualThreadId+1] = sum + in[virtualThreadId]; //bullshit
+    
+    
+}
 
-__device__ __inline__ void checkCircles2(int index, int threadId, int virtualThreadId, int totalCircles, float L, float R, float T, float B, uint* tempIdx, uint* mask, uint* which, int* len){
+__device__ __inline__ void checkCircles2(int index, int virtualThreadId, int totalCircles, float L, float R, float T, float B, uint* tempIdx, uint* mask, int* len){
     int circleindex1 = index + virtualThreadId;
     int circleindex2 = circleindex1+1;
     
@@ -615,54 +621,29 @@ __device__ __inline__ void checkCircles2(int index, int threadId, int virtualThr
 
     float3 position1 = *(float3*)(&cuConstRendererParams.position[3*circleindex1]);
     float3 position2 = *(float3*)(&cuConstRendererParams.position[3*circleindex2]);
-    
 
     if (circleInBox(position1.x, position1.y, rad1, L, R, T, B)){
         tempIdx[virtualThreadId] = virtualThreadId;
-        mask[virtualThreadId] += 1;
+        mask[virtualThreadId] = 1;
         atomicAdd(len, 1);
-
-        which[threadId]=1; //if only first present, 'which' is 1
     }
 
     if (circleInBox(position2.x, position2.y, rad2, L, R, T, B)){
         tempIdx[virtualThreadId+1] = virtualThreadId+1;
-        mask[virtualThreadId] += 1;
+        mask[virtualThreadId+1] = 1;
         atomicAdd(len, 1);
-
-        if (which[threadId]==1){
-            which[threadId] = 3; //if both present, 'which' is 3
-        }
-        else{
-            which[threadId] = 2; //if only second is present, 'which' is 2
-        }
-        
     }
 }
 
-__device__ __inline__ void constructValidIdx2(int threadId, int virtualThreadId, uint* tempIdx, uint* mask, uint* offset, uint* validIdx, uint* which){
-    
-    if (mask[threadId]!=0){
-        uint flag = which[threadId];
-
-        uint offsetindex = offset[threadId];
-
-        int circleindex1 = tempIdx[virtualThreadId];
-        int circleindex2 = tempIdx[virtualThreadId+1];
-
-        if (flag==1){ 
-            validIdx[offsetindex] = circleindex1; //only first is present
-        }
-        else if (flag==2){
-            validIdx[offsetindex] = circleindex2; //only second is present
-        }
-        else if (flag==3){
-            validIdx[offsetindex] = circleindex1; //both are present
-            validIdx[offsetindex+1] = circleindex2;
-        }
-        
+__device__ __inline__ void constructValidIdx2(int virtualThreadId, uint* tempIdx, uint* mask, uint* offset, uint* validIdx){
+    if(mask[virtualThreadId]==1){
+        validIdx[offset[virtualThreadId]] = tempIdx[virtualThreadId]; 
     }
-    
+
+    if(mask[virtualThreadId+1]==1){
+        validIdx[offset[virtualThreadId+1]] = tempIdx[virtualThreadId+1]; 
+    }
+
 }
 
 __global__ void doubleEverythingPixelParallel() {
@@ -691,18 +672,12 @@ __global__ void doubleEverythingPixelParallel() {
     float B = by*BLOCK_SIZE*normY;
     float T = (by*BLOCK_SIZE+BLOCK_SIZE)*normY;
      
-    
-    const uint binsize = BLOCK_SIZE*BLOCK_SIZE;
-    const uint batchsize = 2*binsize;
-    
+    const uint batchsize = 2*BLOCK_SIZE*BLOCK_SIZE; 
 
     __shared__ uint tempIdx[batchsize];
+    __shared__ uint mask[batchsize];
+    __shared__ uint offset[batchsize];
     __shared__ uint validIdx[batchsize];
-
-    __shared__ uint mask[binsize];
-    __shared__ uint which[binsize]; //0 if 1st, 1 if 2nd, 2 if both
-    __shared__ uint offset[binsize];
-    __shared__ uint scratch[2*binsize];
     
     __shared__ int len;
 
@@ -717,25 +692,26 @@ __global__ void doubleEverythingPixelParallel() {
 
         tempIdx[virtualThreadId] = 0;
         tempIdx[virtualThreadId+1] = 0;
+
+        mask[virtualThreadId] = 0;
+        mask[virtualThreadId+1] = 0;
+
+        offset[virtualThreadId] = 0;
+        offset[virtualThreadId+1] = 0;
+
         validIdx[virtualThreadId] = 0;
         validIdx[virtualThreadId+1] = 0;
-        
-        mask[threadId] = 0;
-        offset[threadId] = 0;
-        which[threadId] = 0;
+
         __syncthreads();
 
 
-        checkCircles2(i, threadId, virtualThreadId, totalCircles, L, R, T, B, tempIdx, mask, which, &len);
+        checkCircles2(i, virtualThreadId, totalCircles, L, R, T, B, tempIdx, mask, &len);
         __syncthreads();
 
-        sharedMemExclusiveScan(threadId, mask, offset, scratch, batchsize);
+        stupidscan(virtualThreadId, mask, offset);
         __syncthreads();
 
-        // debugscan(threadId, mask, offset);
-        // __syncthreads();
-
-        constructValidIdx2(threadId, virtualThreadId, tempIdx, mask, offset, validIdx, which);
+        constructValidIdx2(virtualThreadId, tempIdx, mask, offset, validIdx);
         __syncthreads();
         
         if (pixelX<imW && pixelY<imH){

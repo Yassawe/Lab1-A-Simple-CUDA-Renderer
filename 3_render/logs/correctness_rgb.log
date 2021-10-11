@@ -15,10 +15,11 @@ Dumping frames to output_xxx.ppm
 Copying image data from device
 Wrote image file output_0000.ppm
 Copying image data from device
-Mismatch detected at pixel [205][594], value = 1.000000, expected 0.500000 for color Red
-Mismatch detected at pixel [205][594], value = 1.000000, expected 0.500000 for color Green
-Mismatch detected at pixel [205][595], value = 1.000000, expected 0.500000 for color Red
-Mismatch detected at pixel [205][595], value = 1.000000, expected 0.500000 for color Green
-Mismatch detected at pixel [205][596], value = 1.000000, expected 0.500000 for color Red
-Mismatch detected at pixel [205][596], value = 1.000000, expected 0.500000 for color Green
-ERROR : Mismatch detected between reference and actual
+***************** Correctness check passed **************************
+Clear:    0.1807 ms
+Advance:  0.0006 ms
+Render:   4.4592 ms
+Total:    4.6405 ms
+File IO:  47.5647 ms
+
+Overall:  0.0635 sec (note units are seconds)
