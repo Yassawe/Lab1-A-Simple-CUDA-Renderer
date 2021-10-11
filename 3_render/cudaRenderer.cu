@@ -453,26 +453,11 @@ __global__ void kernelRenderCircles() {
 
 
 #define BLOCK_SIZE 32
+#include "circleBoxTest.cu_inl"
 
+// #define SCAN_BLOCK_DIM   BLOCKSIZE
+// #include "exclusiveScan.cu_inl"
 
-__device__ __inline__ int
-circleInBoxConservative(
-    float3 circlePosition, float circleRadius,
-    float boxL, float boxR, float boxT, float boxB)
-{
-
-    // expand box by circle radius.  Test if circle center is in the
-    // expanded box.
-
-    if ( circlePosition.x >= (boxL - circleRadius) &&
-         circlePosition.x <= (boxR + circleRadius) &&
-         circlePosition.y >= (boxB - circleRadius) &&
-         circlePosition.y <= (boxT + circleRadius) ) {
-        return 1;
-    } else {
-        return 0;
-    }
-}
 
 // naive version of pixel parallelism via image blocking (shared memory is not used)
 // this approach is bad, since the majority of the threads will do nothing
@@ -499,15 +484,33 @@ __global__ void naivePixelParallelism() {
     float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imW + pixelX)]); 
 
     for (int i = 0; i<cuConstRendererParams.numCircles; i++){
-        float rad = cuConstRendererParams.radius[i];
-
         float3 circlePosition = *(float3*)(&cuConstRendererParams.position[3*i]);
         shadePixel(i, pixelCenterNorm, circlePosition, imgPtr);
     }
 
 }
 
-//little less naive pixel parallelism (fetch "valid" circles concurrently)
+/////////////////////////less naive pixel parallelism (fetch "valid" circles concurrently)///////////////////////////
+
+//helper functions:
+
+__device__ __inline__ void checkCircles(int index, int threadId, int totalCircles, float L, float R, float T, float B, int *temp, int *len){
+    int globalCircleIndex = index + threadId;
+    
+    if (globalCircleIndex>totalCircles){
+        return;
+    }
+    
+    float rad = cuConstRendererParams.radius[globalCircleIndex];
+    float3 circlePosition = *(float3*)(&cuConstRendererParams.position[3*globalCircleIndex]);
+
+    if (circleInBoxConservative(circlePosition.x, circlePosition.y, rad, L, R, T, B)){
+        temp[threadId] = threadId+1; // index+1, since I later intend to pass all non-zero elements to validIdx. If I don't do +1, I miss the circle 0
+        atomicAdd(len, 1);
+    }
+}
+
+// main kernel:
 __global__ void lessNaivePixelParallelism() {
     int bx = blockIdx.x;
     int by = blockIdx.y;
@@ -518,16 +521,58 @@ __global__ void lessNaivePixelParallelism() {
     short imW = cuConstRendererParams.imageWidth;
     short imH = cuConstRendererParams.imageHeight;
 
+    float4* imgPtr;
+    
+    if (pixelX<imW && pixelY<imH){
+        // i cant just kill threads outside the image, since __synchronize would wait for them later. 
+        //Assigning valid pointers only to valid threads.
+
+        imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imW + pixelX)]); 
+    }
+
+    // multiplyers used to convert from absolute coordinates to normalized. Divison is slower operation, so better do it once.
     float normX = 1.f/imW;
     float normY = 1.f/imH;
 
-    // boundaries for the thread in the current block, converted to normalized coordinates. left, right, top, bottom
+    float2 pixelCenterNorm = make_float2(normX * (static_cast<float>(pixelX) + 0.5f), normY * (static_cast<float>(pixelY) + 0.5f));
+
+    // boundaries of current block in terms of normalized coordinates. LRBT -  left, right, bottom, top 
     float L = bx*BLOCK_SIZE*normX;
     float R = (bx*BLOCK_SIZE + BLOCK_SIZE)*normX;
-    float T = by*BLOCK_SIZE*normY;
-    float B = (by*BLOCK_SIZE+BLOCK_SIZE)*normY;
+    float B = by*BLOCK_SIZE*normY;
+    float T = (by*BLOCK_SIZE+BLOCK_SIZE)*normY;
+     
+    // the idea of optimization is to iterate over several circles at once, i.e. something akin to batches, and then select only those circles that are inside the block
+    // to do so, i need shared array valididx containing only indecies of circles that are present in the block.  
 
+    int threadIdInBlock = threadIdx.y * BLOCK_SIZE + threadIdx.x;
+    const int batchsize = BLOCK_SIZE*BLOCK_SIZE; //can iterate over 32*32 = 1024 circles at a time
+
+    __shared__ int temp[batchsize];
+    __shared__ int validIdx[batchsize];
+    __shared__ int len;
+
+    int totalCircles = cuConstRendererParams.numCircles; 
+
+    for (int i = 0; i<totalCircles; i+=batchsize){
+        len = 0;
+        temp[threadIdInBlock] = 0;
+        validIdx[threadIdInBlock] = 0;
+        
+        __syncthreads();
+
+        checkCircles(i, threadIdInBlock, totalCircles, L, R, T, B, &temp, &len);
+
+        __syncthreads();
+
+
+        //shadePixel(i, pixelCenterNorm, circlePosition, imgPtr);
+        
+    }
 }
+
+
+
 
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -740,15 +785,17 @@ CudaRenderer::advanceAnimation() {
 void
 CudaRenderer::render() {
 
-    // dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
-    // dim3 gridDim((image->width - 1)/BLOCK_SIZE+1, (image->height - 1)/BLOCK_SIZE+1);
+    dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
+    dim3 gridDim((image->width - 1)/BLOCK_SIZE+1, (image->height - 1)/BLOCK_SIZE+1);
 
-    dim3 blockDim(256, 1);
-    dim3 gridDim((numCircles + blockDim.x - 1) / blockDim.x);
+    // dim3 blockDim(256, 1);
+    // dim3 gridDim((numCircles + blockDim.x - 1) / blockDim.x);
 
-    kernelRenderCircles<<<gridDim, blockDim>>>();
+    // kernelRenderCircles<<<gridDim, blockDim>>>();
 
     //naivePixelParallelism<<<gridDim, blockDim>>>();
+
+    lessNaivePixelParallelism<<<gridDim, blockDim>>>();
 
     cudaCheckError(cudaPeekAtLastError());
     cudaCheckError(cudaDeviceSynchronize());
