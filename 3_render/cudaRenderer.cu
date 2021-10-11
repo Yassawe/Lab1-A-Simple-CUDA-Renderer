@@ -15,17 +15,6 @@
 #include "util.h"
 
 
-// #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
-// inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
-// {
-//    if (code != cudaSuccess) 
-//    {
-//       fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
-//       if (abort) exit(code);
-//    }
-// }
-
-
 #define cudaCheckError(ans) { cudaAssert((ans), __FILE__ , __LINE__ ); }
 inline void cudaAssert(cudaError_t code, const char *file, int line, bool abort=true)
 {
@@ -343,10 +332,6 @@ __global__ void kernelAdvanceSnowflake() {
 __device__ __inline__ void
 shadePixel(int circleIndex, float2 pixelCenter, float3 p, float4* imagePtr) {
 
-    if (imagePtr==nullptr){
-        return;
-    }
-
     float diffX = p.x - pixelCenter.x;
     float diffY = p.y - pixelCenter.y;
     float pixelDist = diffX * diffX + diffY * diffY;
@@ -516,11 +501,9 @@ __device__ __inline__ void checkCircles(int index, int threadId, int totalCircle
 }
 
 __device__ __inline__ void constructValidIdx(int threadId, uint* tempIdx, uint* mask, uint* offset, uint* validIdx){
-    
+    // after exclusive prefix sum, offset contains the in-order index of the valid circle. (valid means it exists in the block)
     if(mask[threadId]==1){
-        uint arrayidx = offset[threadId];
-        uint validCircleIdx = tempIdx[threadId];
-        validIdx[arrayidx] = validCircleIdx;
+        validIdx[offset[threadId]] = tempIdx[threadId]; 
     }
 }
 
@@ -536,17 +519,16 @@ __global__ void lessNaivePixelParallelism() {
     int imW = cuConstRendererParams.imageWidth;
     int imH = cuConstRendererParams.imageHeight;
 
+    float normX = 1.f/imW;
+    float normY = 1.f/imH;
+
     float4* imgPtr = nullptr;
-    
     if (pixelX<imW && pixelY<imH){
         imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imW + pixelX)]); 
     }
 
-    // multiplyers used to convert from absolute coordinates to normalized. Divison is slower operation, so better do it once.
-    float normX = 1.f/imW;
-    float normY = 1.f/imH;
-
     float2 pixelCenterNorm = make_float2(normX * (static_cast<float>(pixelX) + 0.5f), normY * (static_cast<float>(pixelY) + 0.5f));
+    
 
     // boundaries of current block in terms of normalized coordinates. LRBT -  left, right, bottom, top 
     float L = bx*BLOCK_SIZE*normX;
@@ -586,25 +568,26 @@ __global__ void lessNaivePixelParallelism() {
         sharedMemExclusiveScan(threadId, mask, offset, scratch, batchsize);
         __syncthreads();
 
-    
         constructValidIdx(threadId, tempIdx, mask, offset, validIdx);
         __syncthreads();
         
-        for (int j = 0; j<len; j++){
-            int index = i + validIdx[j];
-            
-            if (index>totalCircles){
-                continue;
-            }
+        if (pixelX<imW && pixelY<imH){
+            for (int j = 0; j<len; j++){
+                int index = i + validIdx[j];
+                
+                if (index>totalCircles){
+                    break;
+                }
 
-            float3 circlePosition = *(float3*)(&cuConstRendererParams.position[3*index]);
-            shadePixel(index, pixelCenterNorm, circlePosition, imgPtr);
+                float3 circlePosition = *(float3*)(&cuConstRendererParams.position[3*index]);
+                shadePixel(index, pixelCenterNorm, circlePosition, imgPtr);
+            }
         }
+
         __syncthreads();
         
     }
 }
-
 
 
 
@@ -822,15 +805,11 @@ CudaRenderer::render() {
     dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
     dim3 gridDim((image->width - 1)/BLOCK_SIZE+1, (image->height - 1)/BLOCK_SIZE+1);
 
-    // dim3 blockDim(256, 1);
-    // dim3 gridDim((numCircles + blockDim.x - 1) / blockDim.x);
-
-    // kernelRenderCircles<<<gridDim, blockDim>>>();
-
-    // naivePixelParallelism<<<gridDim, blockDim>>>();
-
-    lessNaivePixelParallelism<<<gridDim, blockDim>>>();
-
-    cudaCheckError(cudaPeekAtLastError());
-    cudaCheckError(cudaDeviceSynchronize());
+    if(numCircles<10){
+        naivePixelParallelism<<<gridDim, blockDim>>>();
+    }
+    else{
+        lessNaivePixelParallelism<<<gridDim, blockDim>>>();
+    }
+    cudaDeviceSynchronize();
 }

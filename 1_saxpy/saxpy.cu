@@ -103,7 +103,9 @@ void saxpyCuda(int N, float alpha, float* xarray, float* yarray, float* resultar
     // ensure the kernel running on the GPU has completed.  (Otherwise
     // you will incorrectly observe that almost no time elapses!)
     //
-    cudaThreadSynchronize();
+
+    //cudaThreadSynchronize();
+    cudaDeviceSynchronize();
 
     double endKernel = CycleTimer::currentSeconds();
 
