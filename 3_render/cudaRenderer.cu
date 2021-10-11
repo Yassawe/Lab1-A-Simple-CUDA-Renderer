@@ -340,6 +340,7 @@ shadePixel(int circleIndex, float2 pixelCenter, float3 p, float4* imagePtr) {
     float maxDist = rad * rad;
 
     // circle does not contribute to the image
+
     if (pixelDist > maxDist)
         return;
 
@@ -634,16 +635,22 @@ __device__ __inline__ void checkCircles2(int index, int threadId, int virtualThr
 
 __device__ __inline__ void constructValidIdx2(int threadId, int virtualThreadId, uint* tempIdx, uint* mask, uint* offset, uint* validIdx, uint* which){
     
-    uint offsetindex = offset[threadId];
-    uint circleindex1 = virtualThreadId;
-    uint circleindex2 = virtualThreadId+1;
+    if (mask[threadId]!=0){
+        uint offsetindex = offset[threadId];
 
-    if (mask[threadId]==2){
+        uint circleindex1 = tempIdx[virtualThreadId];
+        
+        uint flag1 = which[threadId];
+        uint flag2 = circleindex1!=0;
+        uint flag3 = flag2>flag1;
+
+        uint a = offsetindex+flag2-flag3;
+
+        uint circleindex2 = virtualThreadId+flag1;
+
         validIdx[offsetindex] = circleindex1;
-        validIdx[offsetindex+1] = circleindex2;
-    }
-    else if(mask[threadId]==1){
-        validIdx[offsetindex] = circleindex1 + which[threadId];
+        validIdx[a] = circleindex2;
+    
     }
 }
 
@@ -954,6 +961,8 @@ CudaRenderer::render() {
     else{
         doubleEverythingPixelParallel<<<gridDim, blockDim>>>();
     }
+
+    // doubleEverythingPixelParallel<<<gridDim, blockDim>>>();
 
     cudaCheckError(cudaPeekAtLastError());
     cudaCheckError(cudaDeviceSynchronize());
