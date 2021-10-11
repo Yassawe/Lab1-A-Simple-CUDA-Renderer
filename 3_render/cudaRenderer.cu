@@ -343,7 +343,7 @@ __global__ void kernelAdvanceSnowflake() {
 __device__ __inline__ void
 shadePixel(int circleIndex, float2 pixelCenter, float3 p, float4* imagePtr) {
 
-    if (imagePtr==NULL){
+    if (imagePtr==nullptr){
         return;
     }
 
@@ -459,22 +459,22 @@ __global__ void kernelRenderCircles() {
 #define BLOCK_SIZE 32
 #include "circleBoxTest.cu_inl"
 
-// #define SCAN_BLOCK_DIM   BLOCKSIZE
-// #include "exclusiveScan.cu_inl"
+#define SCAN_BLOCK_DIM 1024
+#include "exclusiveScan.cu_inl"
 
 
 // naive version of pixel parallelism via image blocking (shared memory is not used)
 // this approach is bad, since the majority of the threads will do nothing
 __global__ void naivePixelParallelism() {
-    int bx = blockIdx.x;
-    int by = blockIdx.y;
+    uint bx = blockIdx.x;
+    uint by = blockIdx.y;
 
     
-    int pixelX = bx*BLOCK_SIZE + threadIdx.x;
-    int pixelY = by*BLOCK_SIZE + threadIdx.y;
+    uint pixelX = bx*BLOCK_SIZE + threadIdx.x;
+    uint pixelY = by*BLOCK_SIZE + threadIdx.y;
 
-    short imW = cuConstRendererParams.imageWidth;
-    short imH = cuConstRendererParams.imageHeight;
+    uint imW = cuConstRendererParams.imageWidth;
+    uint imH = cuConstRendererParams.imageHeight;
 
     if (pixelX>imW || pixelY>imH){
         return; 
@@ -487,7 +487,7 @@ __global__ void naivePixelParallelism() {
 
     float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imW + pixelX)]); 
 
-    for (int i = 0; i<cuConstRendererParams.numCircles; i++){
+    for (uint i = 0; i<cuConstRendererParams.numCircles; i++){
         float3 circlePosition = *(float3*)(&cuConstRendererParams.position[3*i]);
         shadePixel(i, pixelCenterNorm, circlePosition, imgPtr);
     }
@@ -498,8 +498,7 @@ __global__ void naivePixelParallelism() {
 
 //helper functions:
 
-
-__device__ __inline__ void checkCircles(int index, int threadId, int totalCircles, float L, float R, float T, float B, int* tempIdx, int* mask, int* len){
+__device__ __inline__ void checkCircles(int index, int threadId, int totalCircles, float L, float R, float T, float B, uint* tempIdx, uint* mask){
     int globalCircleIndex = index + threadId;
     
     if (globalCircleIndex>totalCircles){
@@ -512,22 +511,43 @@ __device__ __inline__ void checkCircles(int index, int threadId, int totalCircle
     if (circleInBoxConservative(circlePosition.x, circlePosition.y, rad, L, R, T, B)){
         tempIdx[threadId] = threadId;
         mask[threadId] = 1;
-        atomicAdd(len, 1);
     }
 }
 
-__device__ __inline__ void constructValidIdx(int threadId, int* tempIdx, int* mask, int* offset, int* validIdx){
+__device__ __inline__ void constructValidIdx(int threadId, uint* tempIdx, uint* mask, uint* offset, uint* validIdx){
     
     if(mask[threadId]==1){
-        int arrayidx = offset[threadId];
-        int validCircleIdx = tempIdx[threadId];
-        validIdx[arrayidx] = validCircleIdx
+        uint arrayidx = offset[threadId];
+        uint validCircleIdx = tempIdx[threadId];
+        validIdx[arrayidx] = validCircleIdx;
     }
 }
 
-__device__ __inline__ void parallelPrefixSumExclusive(int threadId, int* mask, int* offset){
-    // MOST IMPORTANT
+__device__ __inline__ void NaiveScan(int threadId, uint* mask, uint* offset, uint* scratch, int batchsize){   
+       
+    int pout = 0, pin = 1;   
+
+    // This is exclusive scan, so shift right by one    
+    // and set first element to 0   
+    scratch[pout*batchsize + threadId] = (threadId > 0) ? mask[threadId-1] : 0;
+
+    __syncthreads();   
+    
+    for (int i = 1; i < batchsize; i *= 2){     
+        pout = 1 - pout;      
+        pin = 1 - pout;     
+        if (threadId >= i){
+            scratch[pout*batchsize+threadId] += scratch[pin*batchsize+threadId - i];
+        }     
+        else{       
+            scratch[pout*batchsize+threadId] = scratch[pin*batchsize+threadId];
+        }     
+        __syncthreads();   
+    }   
+    
+    offset[threadId] = scratch[pout*batchsize+threadId]; // write output
 }
+
 
 // main kernel:
 __global__ void lessNaivePixelParallelism() {
@@ -537,10 +557,10 @@ __global__ void lessNaivePixelParallelism() {
     int pixelX = bx*BLOCK_SIZE + threadIdx.x;
     int pixelY = by*BLOCK_SIZE + threadIdx.y;
 
-    short imW = cuConstRendererParams.imageWidth;
-    short imH = cuConstRendererParams.imageHeight;
+    int imW = cuConstRendererParams.imageWidth;
+    int imH = cuConstRendererParams.imageHeight;
 
-    float4* imgPtr;
+    float4* imgPtr = nullptr;
     
     if (pixelX<imW && pixelY<imH){
         // i cant just kill threads outside the image, since __synchronize would wait for them later. 
@@ -565,18 +585,21 @@ __global__ void lessNaivePixelParallelism() {
     // to do so, i need shared array valididx containing only indecies of circles that are present in the block.  
 
     int threadId = threadIdx.y * BLOCK_SIZE + threadIdx.x;
-    const int batchsize = BLOCK_SIZE*BLOCK_SIZE; //can iterate over 32*32 = 1024 circles at a time
 
-    __shared__ int tempIdx[batchsize];
-    __shared__ int mask[batchsize];
-    __shared__ int offset[batchsize];
-    __shared__ int validIdx[batchsize];
-    __shared__ int len;
+    const uint batchsize = BLOCK_SIZE*BLOCK_SIZE; //can iterate over 32*32 = 1024 circles at a time
+
+    __shared__ uint tempIdx[batchsize];
+    __shared__ uint mask[batchsize];
+    __shared__ uint offset[batchsize];
+    __shared__ uint validIdx[batchsize];
+    __shared__ uint scratch[batchsize*2];
+
+    //__shared__ int len;
 
     int totalCircles = cuConstRendererParams.numCircles; 
 
     for (int i = 0; i<totalCircles; i+=batchsize){
-        len = 0;
+        //len = 0;
         tempIdx[threadId] = 0;
         mask[threadId] = 0;
         offset[threadId] = 0;
@@ -584,20 +607,33 @@ __global__ void lessNaivePixelParallelism() {
         __syncthreads();
 
 
-        checkCircles(i, threadId, totalCircles, L, R, T, B, tempIdx, mask, &len);
+        checkCircles(i, threadId, totalCircles, L, R, T, B, tempIdx, mask);
         __syncthreads();
 
-        parallelPrefixSumExclusive(threadId, mask, offset);
+        sharedMemExclusiveScan(threadId, mask, offset, scratch, batchsize);
         __syncthreads();
+
+        // NaiveScan(threadId, mask, offset, scratch, batchsize);
+        // __syncthreads();
     
         constructValidIdx(threadId, tempIdx, mask, offset, validIdx);
         __syncthreads();
 
-        for (int j = 0; j<len; j++){
-            int index = i + validIdx[j];
+        int length = offset[batchsize-1]+1;
+
+        if (length==4){
+            printf("salam\n");
+        }
+
+        for (int j = 0; j<length; j++){
+            int index = i*batchsize + validIdx[j];
+            
+            if (index>totalCircles){
+                continue;
+            }
 
             float3 circlePosition = *(float3*)(&cuConstRendererParams.position[3*index]);
-            shadePixel(i, pixelCenterNorm, circlePosition, imgPtr);
+            shadePixel(index, pixelCenterNorm, circlePosition, imgPtr);
         }
         
     }
@@ -825,7 +861,7 @@ CudaRenderer::render() {
 
     // kernelRenderCircles<<<gridDim, blockDim>>>();
 
-    //naivePixelParallelism<<<gridDim, blockDim>>>();
+    // naivePixelParallelism<<<gridDim, blockDim>>>();
 
     lessNaivePixelParallelism<<<gridDim, blockDim>>>();
 
