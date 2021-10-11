@@ -589,10 +589,175 @@ __global__ void lessNaivePixelParallelism() {
     }
 }
 
+/////////////////////////////////////[wacky optimization, basically double everything]///////////////////////////////////////////////////
 
 
+// __device__ __inline__ void debugscan(int threadId, uint* in, uint* out){
+//     int sum = 0;
 
-////////////////////////////////////////////////////////////////////////////////////////
+//     for (int i =0; i<threadId; i++){
+//         sum += in[i];
+//     }
+
+//     out[threadId] = sum;
+// }
+
+__device__ __inline__ void checkCircles2(int index, int threadId, int virtualThreadId, int totalCircles, float L, float R, float T, float B, uint* tempIdx, uint* mask, uint* which, int* len){
+    int circleindex1 = index + virtualThreadId;
+    int circleindex2 = circleindex1+1;
+    
+    if (circleindex1>totalCircles){
+        return;
+    }
+    
+    float rad1 = cuConstRendererParams.radius[circleindex1];
+    float rad2 = cuConstRendererParams.radius[circleindex2];
+
+    float3 position1 = *(float3*)(&cuConstRendererParams.position[3*circleindex1]);
+    float3 position2 = *(float3*)(&cuConstRendererParams.position[3*circleindex2]);
+    
+
+    if (circleInBox(position1.x, position1.y, rad1, L, R, T, B)){
+        tempIdx[virtualThreadId] = virtualThreadId;
+        mask[virtualThreadId] += 1;
+        atomicAdd(len, 1);
+
+        which[threadId]=1; //if only first present, 'which' is 1
+    }
+
+    if (circleInBox(position2.x, position2.y, rad2, L, R, T, B)){
+        tempIdx[virtualThreadId+1] = virtualThreadId+1;
+        mask[virtualThreadId] += 1;
+        atomicAdd(len, 1);
+
+        if (which[threadId]==1){
+            which[threadId] = 3; //if both present, 'which' is 3
+        }
+        else{
+            which[threadId] = 2; //if only second is present, 'which' is 2
+        }
+        
+    }
+}
+
+__device__ __inline__ void constructValidIdx2(int threadId, int virtualThreadId, uint* tempIdx, uint* mask, uint* offset, uint* validIdx, uint* which){
+    
+    if (mask[threadId]!=0){
+        uint flag = which[threadId];
+
+        uint offsetindex = offset[threadId];
+
+        int circleindex1 = tempIdx[virtualThreadId];
+        int circleindex2 = tempIdx[virtualThreadId+1];
+
+        if (flag==1){ 
+            validIdx[offsetindex] = circleindex1; //only first is present
+        }
+        else if (flag==2){
+            validIdx[offsetindex] = circleindex2; //only second is present
+        }
+        else if (flag==3){
+            validIdx[offsetindex] = circleindex1; //both are present
+            validIdx[offsetindex+1] = circleindex2;
+        }
+        
+    }
+    
+}
+
+__global__ void doubleEverythingPixelParallel() {
+    int bx = blockIdx.x;
+    int by = blockIdx.y;
+
+    int pixelX = bx*BLOCK_SIZE + threadIdx.x;
+    int pixelY = by*BLOCK_SIZE + threadIdx.y;
+
+    int imW = cuConstRendererParams.imageWidth;
+    int imH = cuConstRendererParams.imageHeight;
+
+    float normX = 1.f/imW;
+    float normY = 1.f/imH;
+
+    float4* imgPtr = nullptr;
+    if (pixelX<imW && pixelY<imH){
+        imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imW + pixelX)]); 
+    }
+
+    float2 pixelCenterNorm = make_float2(normX * (static_cast<float>(pixelX) + 0.5f), normY * (static_cast<float>(pixelY) + 0.5f));
+    
+
+    float L = bx*BLOCK_SIZE*normX;
+    float R = (bx*BLOCK_SIZE + BLOCK_SIZE)*normX;
+    float B = by*BLOCK_SIZE*normY;
+    float T = (by*BLOCK_SIZE+BLOCK_SIZE)*normY;
+     
+    
+    const uint binsize = BLOCK_SIZE*BLOCK_SIZE;
+    const uint batchsize = 2*binsize;
+    
+
+    __shared__ uint tempIdx[batchsize];
+    __shared__ uint validIdx[batchsize];
+
+    __shared__ uint mask[binsize];
+    __shared__ uint which[binsize]; //0 if 1st, 1 if 2nd, 2 if both
+    __shared__ uint offset[binsize];
+    __shared__ uint scratch[2*binsize];
+    
+    __shared__ int len;
+
+    int totalCircles = cuConstRendererParams.numCircles;
+    
+    int threadId = threadIdx.y * BLOCK_SIZE + threadIdx.x;
+    int virtualThreadId = 2*threadId;
+
+    
+    for (int i = 0; i<totalCircles; i+=batchsize){
+        len = 0;
+
+        tempIdx[virtualThreadId] = 0;
+        tempIdx[virtualThreadId+1] = 0;
+        validIdx[virtualThreadId] = 0;
+        validIdx[virtualThreadId+1] = 0;
+        
+        mask[threadId] = 0;
+        offset[threadId] = 0;
+        which[threadId] = 0;
+        __syncthreads();
+
+
+        checkCircles2(i, threadId, virtualThreadId, totalCircles, L, R, T, B, tempIdx, mask, which, &len);
+        __syncthreads();
+
+        sharedMemExclusiveScan(threadId, mask, offset, scratch, batchsize);
+        __syncthreads();
+
+        // debugscan(threadId, mask, offset);
+        // __syncthreads();
+
+        constructValidIdx2(threadId, virtualThreadId, tempIdx, mask, offset, validIdx, which);
+        __syncthreads();
+        
+        if (pixelX<imW && pixelY<imH){
+            for (int j = 0; j<len; j++){
+                int index = i + validIdx[j];
+                
+                if (index>totalCircles){
+                    break;
+                }
+
+                float3 circlePosition = *(float3*)(&cuConstRendererParams.position[3*index]);
+                shadePixel(index, pixelCenterNorm, circlePosition, imgPtr);
+            }
+        }
+
+        __syncthreads();
+        
+    }
+}
+
+
+/////////////////////////////////////[CHANGES END HERE]///////////////////////////////////////////////////
 
 
 CudaRenderer::CudaRenderer() {
@@ -805,11 +970,16 @@ CudaRenderer::render() {
     dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
     dim3 gridDim((image->width - 1)/BLOCK_SIZE+1, (image->height - 1)/BLOCK_SIZE+1);
 
-    if(numCircles<10){
-        naivePixelParallelism<<<gridDim, blockDim>>>();
-    }
-    else{
-        lessNaivePixelParallelism<<<gridDim, blockDim>>>();
-    }
-    cudaDeviceSynchronize();
+    // if(numCircles<10){
+    //     naivePixelParallelism<<<gridDim, blockDim>>>();
+    // }
+    // else{
+    //     lessNaivePixelParallelism<<<gridDim, blockDim>>>();
+    // }
+
+    doubleEverythingPixelParallel<<<gridDim, blockDim>>>();
+    
+    cudaCheckError(cudaPeekAtLastError());
+    cudaCheckError(cudaDeviceSynchronize());
+    
 }
