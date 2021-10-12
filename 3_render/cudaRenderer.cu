@@ -483,7 +483,7 @@ __global__ void naivePixelParallelism() {
 
 //helper functions:
 
-__device__ __inline__ void checkCircles(int index, int threadId, int totalCircles, float L, float R, float T, float B, uint* tempIdx, uint* mask, int* len){
+__device__ __inline__ void checkCircles(int index, int threadId, int totalCircles, float L, float R, float T, float B, uint* tempIdx, uint* mask){
     int globalCircleIndex = index + threadId;
     
     if (globalCircleIndex>totalCircles){
@@ -496,14 +496,17 @@ __device__ __inline__ void checkCircles(int index, int threadId, int totalCircle
     if (circleInBoxConservative(circlePosition.x, circlePosition.y, rad, L, R, T, B)){
         tempIdx[threadId] = threadId;
         mask[threadId] = 1;
-        atomicAdd(len, 1);
+    }
+    else{
+        tempIdx[threadId] = 0;
+        mask[threadId] = 0;
     }
 }
 
 __device__ __inline__ void constructValidIdx(int threadId, uint* tempIdx, uint* mask, uint* offset, uint* validIdx){
     // after exclusive prefix sum, offset contains the in-order index of the valid circle. (valid means it exists in the block)
     if(mask[threadId]==1){
-        validIdx[offset[threadId]] = tempIdx[threadId]; 
+        validIdx[offset[threadId]] = tempIdx[threadId];  
     }
 }
 
@@ -551,30 +554,24 @@ __global__ void lessNaivePixelParallelism() {
     __shared__ uint validIdx[batchsize];
     __shared__ uint scratch[batchsize*2];
 
-    __shared__ int len;
-
+    int length; 
     int totalCircles = cuConstRendererParams.numCircles; 
 
     for (int i = 0; i<totalCircles; i+=batchsize){
-        len = 0;
-        tempIdx[threadId] = 0;
-        mask[threadId] = 0;
-        offset[threadId] = 0;
-        validIdx[threadId] = 0;
-        __syncthreads();
 
-
-        checkCircles(i, threadId, totalCircles, L, R, T, B, tempIdx, mask, &len);
+        checkCircles(i, threadId, totalCircles, L, R, T, B, tempIdx, mask);
         __syncthreads();
 
         sharedMemExclusiveScan(threadId, mask, offset, scratch, batchsize);
-        //__syncthreads();
+      
 
         constructValidIdx(threadId, tempIdx, mask, offset, validIdx);
         __syncthreads();
-        
+
+        length = offset[batchsize-1] + mask[batchsize-1];
+
         if (pixelX<imW && pixelY<imH){
-            for (int j = 0; j<len; j++){
+            for (int j = 0; j<length; j++){
                 int index = i + validIdx[j];
                 
                 if (index>totalCircles){
