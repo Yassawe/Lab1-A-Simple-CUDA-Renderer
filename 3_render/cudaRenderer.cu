@@ -551,6 +551,7 @@ __global__ void lessNaivePixelParallelism() {
         __syncthreads();
 
         sharedMemExclusiveScan(threadId, mask, offset, scratch, batchsize);
+        __syncthreads();
       
         constructValidIdx(threadId, tempIdx, mask, offset, validIdx);
         __syncthreads();
